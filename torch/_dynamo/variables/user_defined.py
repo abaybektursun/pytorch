@@ -3083,13 +3083,10 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
     def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:
         return side_effects.is_modified(self._set_vt)
 
-    def install_dict_keys_match_guard(self) -> None:
-        return self._set_vt.install_dict_keys_match_guard()
-
-    def install_dict_contains_guard(
+    def install_set_contains_guard(
         self, tx: "InstructionTranslator", args: list[VariableTracker]
     ) -> None:
-        return self._set_vt.install_dict_contains_guard(tx, args)
+        return self._set_vt.install_set_contains_guard(tx, args)
 
     def is_python_hashable(self) -> bool:
         raise_on_overridden_hash(self.value, self)
