@@ -98,6 +98,7 @@ from ..utils import (
 )
 from .base import MutationType, NO_SUCH_SUBOBJ, ValueMutationNew, VariableTracker
 from .dicts import ConstDictVariable, DefaultDictVariable
+from .hashable import HashableTracker
 from .sets import SetVariable
 
 
@@ -3077,7 +3078,7 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
         return self._set_vt.set_items
 
     @property
-    def items(self) -> list[VariableTracker]:
+    def items(self) -> dict[HashableTracker, VariableTracker]:
         return self._set_vt.items
 
     def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:
