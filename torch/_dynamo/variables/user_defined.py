@@ -3078,7 +3078,7 @@ class UserDefinedSetVariable(UserDefinedObjectVariable):
         return self._set_vt.set_items
 
     @property
-    def items(self) -> dict[HashableTracker, VariableTracker]:
+    def items(self) -> set[HashableTracker]:
         return self._set_vt.items
 
     def is_underlying_vt_modified(self, side_effects: "SideEffects") -> bool:

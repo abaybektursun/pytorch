@@ -58,9 +58,6 @@ class SetVariable(VariableTracker):
         items: Iterable[VariableTracker | HashableTracker],
         **kwargs: Any,
     ) -> None:
-        # .clone() passes these arguments in kwargs but they're recreated below
-        if "original_items" in kwargs:
-            kwargs.pop("original_items")
         if "should_reconstruct_all" in kwargs:
             kwargs.pop("should_reconstruct_all")
 
@@ -78,12 +75,9 @@ class SetVariable(VariableTracker):
                 # VariableTracker - realize to install guards, then wrap
                 # pyrefly: ignore [bad-argument-type]
                 hashable_items.append(HashableTracker(item.realize()))
-        self.items = dict.fromkeys(hashable_items, SetVariable._default_value())
+        self.items = set(hashable_items)
         self.should_reconstruct_all = (
             not is_from_local_source(self.source) if self.source else True
-        )
-        self.original_items = dict.fromkeys(
-            hashable_items, SetVariable._default_value()
         )
 
     def debug_repr(self) -> str:
@@ -99,52 +93,33 @@ class SetVariable(VariableTracker):
 
     @property
     def set_items(self) -> set["HashableTracker"]:
-        return set(self.items.keys())
-
-    @staticmethod
-    def _default_value() -> VariableTracker:
-        # Variable to fill in the keys of the dictionary
-        return CONSTANT_VARIABLE_NONE
+        return self.items
 
     def as_proxy(self) -> Any:
-        return {k.vt.as_proxy() for k in self.set_items}
+        return {k.vt.as_proxy() for k in self.items}
 
     def python_type(self) -> type:
         return set
 
     def as_python_constant(self) -> Any:
-        return {k.vt.as_python_constant() for k in self.set_items}
+        return {k.vt.as_python_constant() for k in self.items}
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
-        codegen.foreach([x.vt for x in self.set_items])
-        codegen.append_output(create_instruction("BUILD_SET", arg=len(self.set_items)))
+        codegen.foreach([x.vt for x in self.items])
+        codegen.append_output(create_instruction("BUILD_SET", arg=len(self.items)))
 
     def __contains__(self, vt: VariableTracker) -> bool:
         assert isinstance(vt, VariableTracker)
         if not is_hashable(vt):
             return False
         key = HashableTracker(vt)
-        return key in self.items and not isinstance(
-            self.items[key], variables.DeletedVariable
-        )
+        return key in self.items
 
     def len(self) -> int:
-        return sum(
-            not isinstance(x, variables.DeletedVariable) for x in self.items.values()
-        )
+        return len(self.items)
 
     def has_new_items(self) -> bool:
-        return self.should_reconstruct_all or any(
-            self.is_new_item(self.original_items.get(key.vt), value)
-            for key, value in self.items.items()
-        )
-
-    def is_new_item(
-        self, value: VariableTracker | None, other: VariableTracker
-    ) -> bool:
-        if value and value.is_realized() and other.is_realized():
-            return id(value.realize()) != id(other.realize())
-        return id(value) != id(other)
+        return self.should_reconstruct_all
 
     def unpack_var_sequence(self, tx: "InstructionTranslator") -> list[VariableTracker]:
         return [x.vt for x in self.items]
@@ -248,11 +223,10 @@ class SetVariable(VariableTracker):
                     "1 args and 0 kwargs",
                     f"{len(args)} args and {len(kwargs)} kwargs",
                 )
-            # Convert add to __setitem__ with None value
             if not is_hashable(args[0]):
                 raise_unhashable(args[0], tx)
             tx.output.side_effects.mutation(self)
-            self.items[HashableTracker(args[0])] = SetVariable._default_value()
+            self.items.add(HashableTracker(args[0]))
             return CONSTANT_VARIABLE_NONE
         elif name == "pop":
             if kwargs or args:
@@ -264,12 +238,11 @@ class SetVariable(VariableTracker):
                 )
             # Choose an item at random and pop it
             try:
-                result: VariableTracker = self.set_items.pop().vt  # type: ignore[assignment]
+                result: VariableTracker = self.items.pop().vt  # type: ignore[assignment]
             except KeyError as e:
                 raise_observed_exception(KeyError, tx, args=list(e.args))
             self.should_reconstruct_all = True
             tx.output.side_effects.mutation(self)
-            self.items.pop(HashableTracker(result))
             return result
         elif name == "isdisjoint":
             if kwargs or len(args) != 1:
@@ -366,7 +339,7 @@ class SetVariable(VariableTracker):
                 raise_observed_exception(KeyError, tx, args=args)
             self.should_reconstruct_all = True
             tx.output.side_effects.mutation(self)
-            self.items.pop(HashableTracker(args[0]))
+            self.items.remove(HashableTracker(args[0]))
             return CONSTANT_VARIABLE_NONE
         elif name == "discard":
             if kwargs or len(args) != 1:
@@ -379,7 +352,7 @@ class SetVariable(VariableTracker):
             if args[0] in self:
                 self.should_reconstruct_all = True
                 tx.output.side_effects.mutation(self)
-                self.items.pop(HashableTracker(args[0]))
+                self.items.remove(HashableTracker(args[0]))
             return CONSTANT_VARIABLE_NONE
         elif name in ("issubset", "issuperset"):
             if len(args) != 1:
@@ -483,7 +456,7 @@ class SetVariable(VariableTracker):
             ):
                 return CONSTANT_VARIABLE_FALSE
             r = self.call_method(tx, "symmetric_difference", args, kwargs)
-            return VariableTracker.build(tx, len(r.set_items) == 0)  # type: ignore[attr-defined]
+            return VariableTracker.build(tx, len(r.items) == 0)  # type: ignore[attr-defined]
         elif name == "__ne__":
             eq_result = self.call_method(tx, "__eq__", args, kwargs)
             return VariableTracker.build(tx, not eq_result.value)  # type: ignore[attr-defined]
@@ -500,7 +473,7 @@ class SetVariable(VariableTracker):
                 return VariableTracker.build(tx, NotImplemented)
             return VariableTracker.build(
                 tx,
-                cmp_name_to_op_mapping[name](self.set_items, args[0].set_items),  # type: ignore[attr-defined]
+                cmp_name_to_op_mapping[name](self.items, args[0].set_items),  # type: ignore[attr-defined]
             )
         elif name == "__contains__":
             if not len(args):
@@ -566,7 +539,7 @@ class SetVariable(VariableTracker):
         raise RuntimeError("Illegal to getitem on a set")
 
     def sq_length(self, tx: "InstructionTranslator") -> VariableTracker:
-        return VariableTracker.build(tx, len(self.set_items))
+        return VariableTracker.build(tx, len(self.items))
 
 
 class OrderedSetClassVariable(VariableTracker):
@@ -650,7 +623,7 @@ class OrderedSetVariable(SetVariable):
             return "OrderedSet([" + ",".join(items) + "])"
 
     def as_python_constant(self) -> OrderedSet[Any]:
-        return OrderedSet([k.vt.as_python_constant() for k in self.set_items])
+        return OrderedSet([k.vt.as_python_constant() for k in self.items])
 
     def python_type(self) -> type[OrderedSet[Any]]:
         return OrderedSet
@@ -663,8 +636,8 @@ class OrderedSetVariable(SetVariable):
         codegen.add_push_null(
             lambda: codegen.load_import_from("torch.utils._ordered_set", "OrderedSet")
         )
-        codegen.foreach([x.vt for x in self.set_items])
-        codegen.append_output(create_instruction("BUILD_LIST", arg=len(self.set_items)))
+        codegen.foreach([x.vt for x in self.items])
+        codegen.append_output(create_instruction("BUILD_LIST", arg=len(self.items)))
         codegen.extend_output(create_call_function(1, False))
 
 
@@ -681,10 +654,6 @@ class FrozensetVariable(SetVariable):
                 items.append(key_str)
             return "{" + ",".join(items) + "}"
 
-    @property
-    def set_items(self) -> set["HashableTracker"]:
-        return set(self.items.keys())
-
     def python_type(self) -> type:
         return frozenset
 
@@ -692,7 +661,7 @@ class FrozensetVariable(SetVariable):
         return variables.BuiltinVariable(frozenset)
 
     def as_python_constant(self) -> Any:
-        return frozenset({k.vt.as_python_constant() for k in self.set_items})
+        return frozenset({k.vt.as_python_constant() for k in self.items})
 
     def reconstruct(self, codegen: "PyCodegen") -> None:
         codegen.add_push_null(
@@ -702,10 +671,10 @@ class FrozensetVariable(SetVariable):
                 ]
             )
         )
-        codegen.foreach([x.vt for x in self.set_items])
+        codegen.foreach([x.vt for x in self.items])
         codegen.extend_output(
             [
-                create_instruction("BUILD_LIST", arg=len(self.set_items)),
+                create_instruction("BUILD_LIST", arg=len(self.items)),
                 *create_call_function(1, False),
             ]
         )
@@ -767,10 +736,6 @@ class DictKeySetVariable(SetVariable):
         # Already EQUALS_MATCH guarded
         pass
 
-    @property
-    def set_items(self) -> Any:
-        return self.items
-
     def python_type(self) -> type:
         from ..utils import dict_keys
 
@@ -778,7 +743,7 @@ class DictKeySetVariable(SetVariable):
 
     def as_python_constant(self) -> Any:
         return dict.fromkeys(
-            {k.vt.as_python_constant() for k in self.set_items}, None
+            {k.vt.as_python_constant() for k in self.items}, None
         ).keys()
 
     def call_method(
